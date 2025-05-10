@@ -1,0 +1,12 @@
+rules:
+  - id: xss-echo
+    pattern: echo $_GET[...] 
+    message: Potential XSS via echo
+    languages: [php]
+    severity: ERROR
+
+  - id: weak-hash-md5
+    pattern: md5(...)
+    message: Insecure hashing algorithm
+    languages: [php]
+    severity: WARNING
