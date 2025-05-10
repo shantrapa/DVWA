@@ -1,0 +1,192 @@
+name: DevSecOps CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # Allows manual triggering
+
+# Set permissions needed for GitHub token
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  id-token: write
+
+jobs:
+  sast-scan:
+    name: Static Application Security Testing
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Required for SonarQube to analyze entire history
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+          coverage: xdebug
+          tools: composer:v2, phpcs, php-cs-fixer
+          
+      # Run PHP Security Checker
+      - name: PHP Security Checker
+        uses: symfonycorp/security-checker-action@v4
+        continue-on-error: true
+
+      # Code composition analysis with Snyk for dependency scanning
+      - name: Run Snyk dependency scan
+        uses: snyk/actions/php@master
+        continue-on-error: true  # Don't fail pipeline for vulnerabilities
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+      # Setup SonarQube Scanner (conditional execution)
+      - name: SonarQube Scan
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_TOKEN != null }}
+        uses: SonarSource/sonarcloud-github-action@master
+        continue-on-error: true  # Don't fail pipeline, just report
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=dvwa-security-scan
+            -Dsonar.organization=your-organization
+            -Dsonar.sources=.
+            -Dsonar.php.coverage.reportPaths=coverage.xml
+            -Dsonar.exclusions=vendor/**,**/*.sql,**/*.js,**/*.css
+            
+      # Alternative simpler static analysis with PHPStan
+      - name: Install PHPStan
+        run: composer require --dev phpstan/phpstan
+        continue-on-error: true
+        
+      - name: Run PHPStan
+        run: vendor/bin/phpstan analyse --level=0 .
+        continue-on-error: true
+
+      # Run Semgrep for security-focused static analysis
+      - name: Semgrep scan
+        uses: semgrep/semgrep-action@v1
+        with:
+          publishToken: ${{ secrets.SEMGREP_APP_TOKEN }}
+          publishDeployment: ${{ secrets.SEMGREP_DEPLOYMENT_ID || '' }}
+          generateSarif: "1"
+          config: >-
+            p/owasp-top-ten
+            p/security-audit
+          output: semgrep-results.sarif
+        continue-on-error: true
+
+      # Upload SARIF results to GitHub Security tab
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+
+  build-and-push:
+    name: Build and Push Docker Image
+    needs: sast-scan  # Run after SAST scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}/dvwa:latest
+
+  deploy-to-staging:
+    name: Deploy to Staging
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Deploy to Staging Environment
+        run: |
+          echo "Deploying DVWA to staging environment"
+          # In a real scenario, this would use kubectl, helm, or other deployment tool
+          # Example with kubectl:
+          # kubectl apply -f k8s/staging/deployment.yaml
+          
+          # For this demo, we'll simulate a deployment with a delay
+          sleep 10
+          echo "Deployment completed"
+          echo "DVWA_URL=http://staging-dvwa.example.com" >> $GITHUB_ENV
+
+  dast-scan:
+    name: Dynamic Application Security Testing
+    needs: deploy-to-staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      # Set up a local instance of DVWA for testing
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v2
+        
+      - name: Run DVWA container locally
+        run: |
+          docker run --name dvwa-test -d -p 8080:80 vulnerables/web-dvwa:latest
+          echo "Waiting for DVWA to start..."
+          sleep 30
+          echo "DVWA container is running at http://localhost:8080"
+
+      # Run ZAP Baseline Scan against local container
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: 'http://localhost:8080'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a'
+          allow_issue_writing: false
+        continue-on-error: true  # Don't fail pipeline for vulnerabilities
+      
+      - name: Stop DVWA container
+        if: always()
+        run: docker stop dvwa-test
+
+  report-generation:
+    name: Generate Security Reports
+    needs: [sast-scan, dast-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Collect security scan results
+        run: |
+          mkdir -p security-reports
+          # In a real scenario, you would gather reports from previous steps
+          echo "# Security Scan Summary" > security-reports/summary.md
+          echo "* SAST scan completed" >> security-reports/summary.md
+          echo "* DAST scan completed" >> security-reports/summary.md
+          echo "* Check detailed reports in Security tab" >> security-reports/summary.md
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports
+          path: security-reports/
