@@ -1,0 +1,5 @@
+10016	IGNORE	http://localhost:8080/login.php	(Cross-Domain Misconfiguration - Development Environment)
+10027	IGNORE	http://localhost:8080/	(Information Disclosure - Development Environment)
+10054	IGNORE	http://localhost:8080/setup.php	(Cookie without SameSite Attribute - Expected during setup)
+40025	IGNORE	http://localhost:8080/	(Proxy Disclosure - False positive in test environment)
+90022	IGNORE	http://localhost:8080/vulnerabilities/	(Application Error Disclosure - Expected in DVWA)
