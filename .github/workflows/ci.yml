@@ -1,0 +1,54 @@
+name: DVWA DevSecOps Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-run-dvwa:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Start DVWA
+        run: |
+          docker pull vulnerables/web-dvwa
+          docker run -d -p 8080:80 --name dvwa vulnerables/web-dvwa
+          sleep 20
+
+  dast:
+    needs: build-and-run-dvwa
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run OWASP ZAP scan
+        run: |
+          docker pull owasp/zap2docker-stable
+          docker run --network host owasp/zap2docker-stable zap-baseline.py \
+            -t http://localhost:8080 -r zap_report.html
+
+      - name: Upload ZAP report
+        uses: actions/upload-artifact@v2
+        with:
+          name: zap-report
+          path: zap_report.html
+
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Install Semgrep
+        run: curl -s https://semgrep.dev/install.sh | bash
+
+      - name: Run Semgrep SAST
+        run: semgrep --config=auto --quiet --json > semgrep_results.json
+
+      - name: Upload Semgrep report
+        uses: actions/upload-artifact@v2
+        with:
+          name: semgrep-results
+          path: semgrep_results.json
